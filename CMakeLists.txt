@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 2.6 FATAL_ERROR)
 project(OBJECT_DETECTION)
-find_package(PCL 1.5 REQUIRED COMPONENTS common io filters sample_consensus segmentation visualization kdtree features surface octree registration keypoints tracking search range_image)
+find_package(PCL 1.6 REQUIRED COMPONENTS common io filters sample_consensus segmentation visualization kdtree features surface octree registration keypoints tracking search range_image)
 find_package(Boost)
 #find_package(OpenCV REQUIRED)
 include_directories(${Boost_INCLUDE_DIR})

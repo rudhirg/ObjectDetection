@@ -69,6 +69,9 @@
 #include <pcl/visualization/image_viewer.h>
 #include <pcl/range_image/range_image.h>
 #include <pcl/visualization/common/float_image_utils.h>
+
+#include <pcl/segmentation/region_growing.h>
+
 #include "ObjectDetection.h"
 #include "KalmanFilter.h"
 
@@ -89,6 +92,8 @@ using namespace std;
 #define FH_FEATURE 1
 #define OPENCV 0
 #define CAMERA_INPUT 0
+#define REG_GROW_ALGO 1
+
 
 #define FPS_CALC_BEGIN                          \
     static double duration = 0;                 \
@@ -367,21 +372,32 @@ public:
 		std::stringstream ss;
 		ss<<objLabels[i].score;
 		objLabels[i].score;
-		drawCube(viz, (objLabels[i].pCluster), ss.str());
+//		drawCube(viz, (objLabels[i].pCluster), ss.str());
 		if(objLabels[i].score > c.score) 
 			c = objLabels[i];
 	}
-	//std::stringstream ss;
-	//ss<<c.score;
+	std::stringstream ss;
+	ss<<c.score;
 
-	/*if(c.score >= 0.5) {
+	if(c.score >= 0.5) {
 		drawCube(viz, c.pCluster, ss.str());
 		cout<<"Drawing Cube for Object: " << c.score<<endl;
-	}*/
+	}
 
 	// show kalman predicted Sphere
 	printf("Drawing the Predicted Kalman Values\n");
 	viz.addSphere(m_predictedPoint, 0.03, "Kalman");
+
+#if REG_GROW_ALGO
+/*	viz.removeAllShapes();
+	// draw region-growing segmentation results
+	for(int i = 0; i < segCloudsRegGrowing_.size(); i++) {
+		std::stringstream ss;
+		ss << "cube" << i;
+		drawCube(viz, segCloudsRegGrowing_[i], ss.str());
+	}
+*/
+#endif
 
         segmentedClusters_.clear();
 #endif
@@ -617,9 +633,65 @@ public:
     result.is_dense = true;
   }
   
+#if REG_GROW_ALGO
+  std::vector<CloudPtr> RegionGrowingSegmentation(const CloudConstPtr & cloud)
+  {
+    pcl::RegionGrowing<pcl::PointXYZ> regionGrowing;
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr changedXYZCloud (new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::copyPointCloud(*cloud, *changedXYZCloud);
+
+    // Normal Estimation over whole cloud (dataset)
+    pcl::NormalEstimation<pcl::PointXYZRGB, pcl::Normal> ne;
+    ne.setInputCloud(cloud);
+
+    pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZRGB>());
+    ne.setSearchMethod(tree);
+
+    pcl::PointCloud<pcl::Normal>::Ptr cloud_normals (new pcl::PointCloud<pcl::Normal>);
+
+    ne.setRadiusSearch(0.02);
+    ne.compute(*cloud_normals);
+
+    regionGrowing.setCloud(changedXYZCloud);
+    regionGrowing.setNormals(cloud_normals);
+
+    regionGrowing.segmentPoints();
+
+    std::vector<std::vector<int> > segments = regionGrowing.getSegments();
+
+    std::vector<CloudPtr> segmentedClouds;
+    int CloudThreshold = 100;	// threshold on the number of points it should have
+
+    for(int i = 0; i < segments.size(); i++) {
+        CloudPtr ObjectCloud;
+        std::vector<int> seg = segments[i];
+
+        if(seg.size() > 0) {
+            ObjectCloud.reset(new Cloud);
+            pcl::PointIndices::Ptr pindices( new pcl::PointIndices());
+            for(int j = 0; j < seg.size(); j++) {
+                pindices->indices.push_back(seg[j]);
+                ObjectCloud->points.push_back( cloud->points[seg[j]] );
+            }
+            ObjectCloud->width = ObjectCloud->points.size();
+            ObjectCloud->height = 1;
+            ObjectCloud->is_dense = true;
+
+	    if( ObjectCloud->points.size() < CloudThreshold ) continue;
+
+            segmentedClouds.push_back(ObjectCloud);
+        }
+    }
+
+    return segmentedClouds;
+  }
+#endif
+
   void
   cloud_cb (const CloudConstPtr &cloud)
   {
+    sleep(10);
     boost::mutex::scoped_lock lock (mtx_);
     double start = pcl::getTime ();
     FPS_CALC_BEGIN;
@@ -631,7 +703,7 @@ public:
 
     filterPassThrough (cloud, *cloud_pass_);
 
-		GetImage(cloud);
+    GetImage(cloud);
 
     curr_cloud_ = cloud_pass_;
 
@@ -659,7 +731,12 @@ public:
           target_cloud = nonplane_cloud_;
 
 	  curr_cloud_ = nonplane_cloud_;
-	  	
+
+#if REG_GROW_ALGO
+	   // get segments using Region Growing algorithm
+          segCloudsRegGrowing_ = RegionGrowingSegmentation(nonplane_cloud_);	  	
+#endif
+
         }
         else
         {
@@ -682,9 +759,12 @@ public:
           // select the cluster to track
           CloudPtr temp_cloud (new Cloud);
           int segment_index = 0;
-				
+
+#if REG_GROW_ALGO
+	  LabelClustersRegGrow(segCloudsRegGrowing_);
+#else				
           LabelClusters(target_cloud, cluster_indices);
-          
+#endif          
 /*          segmented_cloud_.reset (new Cloud);
           extractSegmentCluster (target_cloud, cluster_indices, segment_index, *segmented_cloud_);
           RefCloudPtr ref_cloud (new RefCloud);
@@ -718,7 +798,7 @@ public:
 #if 1 
     else
     {
-	m_predictedPoint = m_kalman.Correct(NULL, NULL, false);    	
+//	m_predictedPoint = m_kalman.Correct(NULL, NULL, false);    	
       //normals_.reset (new pcl::PointCloud<pcl::Normal>);
       //normalEstimation (cloud_pass_downsampled_, *normals_);
       //RefCloudPtr tracking_cloud (new RefCloud ());
@@ -732,7 +812,6 @@ public:
 */    }
   
 #endif
- 
     new_cloud_ = true;
     double end = pcl::getTime ();
     computation_time_ = end - start;
@@ -808,6 +887,69 @@ public:
 		}
 	}
 
+#if REG_GROW_ALGO
+	void LabelClustersRegGrow(std::vector<CloudPtr> clusters)
+	{
+                Clusters maxCluster;
+                maxCluster.score = 0;
+
+                for (size_t i = 0; i < clusters.size (); i++)
+                {
+                        Clusters c;
+                        c.score = 0;
+
+                	CloudPtr temp_cloud (new Cloud);
+			temp_cloud = clusters[i];
+
+                        // Get the scores based on 3D features
+                        //double score3d 
+                        BoundingBox box3d = LabelCluster3D(temp_cloud);
+
+                        // Get the scores based on 2D features
+                        //double score2d 
+                        BoundingBox box2d = LabelCluster2D(temp_cloud);
+
+                        double thresholdScale = 3.0;
+                        // if 3d bounding box is much wider then consider only 2d
+/*                      if(box3d.height * thresholdScale > box2d.height && box3d.width * thresholdScale > box2d.width) {
+                                printf("Pruning the cluster\n");
+                                CloudPtr bbCloud(new Cloud);
+                                GetBoundedCloud(cloud_pass_, box2d.x, box2d.y, box3d.z, box2d.width, box2d.height, box2d.width, *temp_cloud);
+                                box3d = LabelCluster3D(temp_cloud);
+                        }
+*/
+                        double score3d = box3d.prob;
+                        double score2d = box2d.prob;
+
+                        cout << "Clusters scores - 3D: " << score3d << " 2D: " << score2d <<endl;
+                        //if( objType.type == 1 ) { // banana
+                        c.pCluster = temp_cloud;
+                        c.score = score2d + score3d;
+                        segmentedClusters_.push_back(c);
+
+                        //}
+                        if(c.score > maxCluster.score) {
+                                maxCluster.pCluster = temp_cloud;
+                                maxCluster.score = c.score;
+                        }
+                }
+	
+		if(maxCluster.score > 0) {
+                        pcl::PointXYZRGB min_pt, max_pt;
+                        pcl::getMinMax3D(maxCluster.pCluster.operator*(), min_pt, max_pt);
+
+                        pcl::PointXYZ m_pt;
+                        m_pt.x = min_pt.x, m_pt.y = min_pt.y, m_pt.z = min_pt.z;
+                        pcl::PointXYZ mx_pt;
+                        mx_pt.x = max_pt.x, mx_pt.y = max_pt.y, mx_pt.z = max_pt.z;
+                        // predicted kalman
+                        m_predictedPoint = m_kalman.Correct(&m_pt, &mx_pt, true);
+                } else {
+                        m_predictedPoint = m_kalman.Correct(NULL, NULL, false);
+                }
+	}
+#endif
+
   void run ()
   {
 #if CAMERA_INPUT
@@ -859,7 +1001,7 @@ public:
 			//break;
 
 
-			sleep(0.5);
+			sleep(5);
 		}
 		cout << "All pcd's Processed" << endl;
 	}
@@ -895,7 +1037,7 @@ public:
   {
 	if(targetCloud == NULL) return;
 
-	viz.removeAllShapes();
+//	viz.removeAllShapes();
 
 	pcl::ModelCoefficients coeff_cube;
 	PointType min_pt, max_pt;
@@ -1329,6 +1471,9 @@ int Init3DObjDetector()
 void SetObjectName(std::string name) {
 	m_objectName = name;
 }
+#if REG_GROW_ALGO
+  std::vector<CloudPtr> segCloudsRegGrowing_;
+#endif
 
   pcl::PointXYZ		m_predictedPoint;
   Kalman		m_kalman;

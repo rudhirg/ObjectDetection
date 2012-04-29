@@ -203,9 +203,9 @@ int ObjectDetection::trainMultiScale(std::string imgName, bool classType)
 		ht = m_winHt;
 		wid = m_winWid;
 
-		cv::imshow("object detector", boundedImg);
+/*		cv::imshow("object detector", boundedImg);
 	        int c = cv::waitKey(0) & 255;
-		this->train(boundedImg, classType);
+*/		this->train(boundedImg, classType);
 	}
         return 0;
 }
@@ -306,8 +306,8 @@ cv::Rect ObjectDetection::testClassifyMultiScale(cv::Mat& img, int stride, doubl
 	cout << "Max probability: " << max_prob << endl;
 
 	if(max_frame.data != NULL) {	
-//		cv::imshow("object detector", max_frame);
-//        	cv::waitKey(0) & 255;
+		cv::imshow("object detector", max_frame);
+        	cv::waitKey(0) & 255;
 	}
 	
 	return max_frame_rect;
